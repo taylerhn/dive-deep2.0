@@ -49,7 +49,7 @@ export function HomeScreen({ onStartRoom, onJoinRoom }: HomeScreenProps) {
             <MessageCircle className="w-10 h-10 text-white" />
           </motion.div>
           
-          <h1 className="text-white text-6xl">
+          <h1 className="text-black text-6xl">
             Let's Get Deeper
           </h1>
           

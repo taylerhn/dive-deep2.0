@@ -3,20 +3,24 @@ import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Card } from './ui/card';
 import { ScrollArea } from './ui/scroll-area';
-import { 
-  Mic, 
-  MicOff, 
-  Video, 
-  VideoOff, 
-  SkipForward, 
-  Shuffle, 
+import {
+  Mic,
+  MicOff,
+  Video,
+  VideoOff,
+  SkipForward,
+  Shuffle,
   Copy,
   LogOut,
-  Sparkles
+  Sparkles,
+  Loader2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { QuestionCard } from './QuestionCard';
-import { questions } from '../data/questions';
+import { useLiveKit } from '../hooks/useLiveKit';
+import { useTranscription } from '../hooks/useTranscription';
+import { useAIQuestions } from '../hooks/useAIQuestions';
+import { aiService } from '../services/aiService';
 
 type Vibe = 'fun' | 'thoughtful' | 'deep' | 'mixed';
 
@@ -26,32 +30,64 @@ interface LiveRoomProps {
   onEndSession: (data: any) => void;
 }
 
-interface Participant {
-  id: number;
-  name: string;
-  speaking: boolean;
-}
-
-interface TranscriptLine {
-  id: number;
-  speaker: string;
-  text: string;
-  timestamp: string;
-}
-
 export function LiveRoom({ vibe, roomCode, onEndSession }: LiveRoomProps) {
-  const [micEnabled, setMicEnabled] = useState(true);
-  const [videoEnabled, setVideoEnabled] = useState(true);
-  const [isListening, setIsListening] = useState(false);
-  const [currentQuestion, setCurrentQuestion] = useState<string | null>(null);
-  const [showQuestion, setShowQuestion] = useState(false);
-  const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
-  const [participants] = useState<Participant[]>([
-    { id: 1, name: 'You', speaking: false },
-    { id: 2, name: 'Alex', speaking: false },
-  ]);
   const [copiedCode, setCopiedCode] = useState(false);
-  const [questionsAsked, setQuestionsAsked] = useState(0);
+  const [sessionStartTime] = useState(Date.now());
+
+  // LiveKit connection
+  const {
+    participants,
+    isConnected,
+    isConnecting,
+    error: connectionError,
+    isMicEnabled,
+    isCameraEnabled,
+    connect,
+    disconnect,
+    toggleMicrophone,
+    toggleCamera,
+  } = useLiveKit({
+    roomName: roomCode,
+    participantName: 'User', // In production, get from user profile
+    onConnected: () => {
+      console.log('Connected to LiveKit room');
+    },
+    onDisconnected: () => {
+      console.log('Disconnected from LiveKit room');
+    },
+    onError: (error) => {
+      console.error('LiveKit error:', error);
+    },
+  });
+
+  // Transcription
+  const {
+    transcript,
+    isListening,
+    startListening,
+    stopListening,
+    getFullTranscript,
+    getRecentTranscript,
+  } = useTranscription({
+    participantId: participants[0]?.identity || 'user',
+    participantName: participants[0]?.name || 'You',
+    enabled: isConnected && isMicEnabled,
+  });
+
+  // AI question generation
+  const {
+    currentQuestion,
+    isAnalyzing,
+    isGenerating,
+    askedQuestions,
+    dismissQuestion,
+    skipQuestion,
+    forceNextQuestion,
+  } = useAIQuestions({
+    vibe,
+    getTranscript: getRecentTranscript,
+    enabled: isConnected && transcript.length > 0,
+  });
 
   const vibeColors = {
     fun: { bg: 'from-yellow-400 to-orange-500', text: 'text-yellow-400' },
@@ -60,76 +96,33 @@ export function LiveRoom({ vibe, roomCode, onEndSession }: LiveRoomProps) {
     mixed: { bg: 'from-purple-400 to-indigo-500', text: 'text-purple-400' },
   };
 
-  // Simulate AI listening and generating questions
+  // Auto-connect on mount
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (Math.random() > 0.7 && !showQuestion) {
-        triggerNewQuestion();
-      }
-    }, 8000);
-
-    return () => clearInterval(interval);
-  }, [showQuestion]);
-
-  // Simulate transcript updates
-  useEffect(() => {
-    const mockTranscripts = [
-      { speaker: 'You', text: "I've always wanted to travel to Japan..." },
-      { speaker: 'Alex', text: "Oh really? What draws you to it?" },
-      { speaker: 'You', text: "The culture, the food, and honestly the sense of calm I've seen." },
-      { speaker: 'Alex', text: "I feel that. I went there last year and it completely changed my perspective on mindfulness." },
-    ];
-
-    let index = 0;
-    const interval = setInterval(() => {
-      if (index < mockTranscripts.length) {
-        setTranscript(prev => [
-          ...prev,
-          {
-            id: Date.now(),
-            speaker: mockTranscripts[index].speaker,
-            text: mockTranscripts[index].text,
-            timestamp: new Date().toLocaleTimeString('en-US', { 
-              hour: '2-digit', 
-              minute: '2-digit' 
-            })
-          }
-        ]);
-        index++;
-      }
-    }, 5000);
-
-    return () => clearInterval(interval);
+    connect();
+    return () => {
+      disconnect();
+    };
   }, []);
 
-  const triggerNewQuestion = () => {
-    setIsListening(true);
-    setTimeout(() => {
-      const vibeQuestions = vibe === 'mixed' 
-        ? [...questions.fun, ...questions.thoughtful, ...questions.deep]
-        : questions[vibe];
-      
-      const randomQuestion = vibeQuestions[Math.floor(Math.random() * vibeQuestions.length)];
-      setCurrentQuestion(randomQuestion);
-      setShowQuestion(true);
-      setIsListening(false);
-      setQuestionsAsked(prev => prev + 1);
-    }, 2000);
-  };
+  // Auto-start transcription when mic is enabled
+  useEffect(() => {
+    if (isConnected && isMicEnabled && !isListening) {
+      startListening();
+    } else if (!isMicEnabled && isListening) {
+      stopListening();
+    }
+  }, [isConnected, isMicEnabled]);
 
   const handleSkipQuestion = () => {
-    setShowQuestion(false);
-    setCurrentQuestion(null);
+    skipQuestion();
   };
 
   const handleAnswerQuestion = () => {
-    setShowQuestion(false);
-    setTimeout(() => setCurrentQuestion(null), 300);
+    dismissQuestion();
   };
 
-  const handleVibeShift = () => {
-    setShowQuestion(false);
-    setTimeout(() => triggerNewQuestion(), 500);
+  const handleNextQuestion = async () => {
+    await forceNextQuestion();
   };
 
   const copyRoomCode = () => {
@@ -138,20 +131,55 @@ export function LiveRoom({ vibe, roomCode, onEndSession }: LiveRoomProps) {
     setTimeout(() => setCopiedCode(false), 2000);
   };
 
-  const handleEndSession = () => {
+  const handleEndSession = async () => {
+    const duration = Math.floor((Date.now() - sessionStartTime) / 60000);
+    const fullTranscript = getFullTranscript();
+
+    // Generate AI summary
+    const summary = await aiService.generateSessionSummary(
+      fullTranscript,
+      vibe,
+      duration,
+      askedQuestions.length
+    );
+
     const sessionData = {
-      duration: '12 minutes',
-      vibeBreakdown: { deep: 40, fun: 30, thoughtful: 30 },
-      keyThemes: ['trust', 'childhood', 'travel'],
-      questionsAnswered: questionsAsked,
-      topQuestions: [
-        "What's a place that changed your perspective?",
-        "When do you feel most yourself?",
-        "What do you need to hear right now?"
-      ]
+      duration: `${duration} minutes`,
+      vibeBreakdown: { deep: 40, fun: 30, thoughtful: 30 }, // Could be calculated from question types
+      keyThemes: summary.keyThemes,
+      questionsAnswered: askedQuestions.length,
+      topQuestions: askedQuestions.slice(-3),
     };
+
+    await disconnect();
     onEndSession(sessionData);
   };
+
+  // Show loading state while connecting
+  if (isConnecting) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <Loader2 className="h-12 w-12 animate-spin text-purple-400 mx-auto" />
+          <p className="text-white text-lg">Connecting to room...</p>
+          <p className="text-slate-400 text-sm">Room: {roomCode}</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show error state if connection failed
+  if (connectionError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <p className="text-red-400 text-lg">Failed to connect</p>
+          <p className="text-slate-400 text-sm">{connectionError.message}</p>
+          <Button onClick={() => connect()}>Retry</Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col p-4 gap-4">
@@ -161,7 +189,7 @@ export function LiveRoom({ vibe, roomCode, onEndSession }: LiveRoomProps) {
           <Badge className={`bg-gradient-to-r ${vibeColors[vibe].bg} text-white border-0`}>
             {vibe.charAt(0).toUpperCase() + vibe.slice(1)} Vibe
           </Badge>
-          
+
           <button
             onClick={copyRoomCode}
             className="flex items-center gap-2 px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 transition-colors text-white"
@@ -170,6 +198,12 @@ export function LiveRoom({ vibe, roomCode, onEndSession }: LiveRoomProps) {
             <Copy className="h-3 w-3" />
             {copiedCode && <span className="text-xs text-green-400">Copied!</span>}
           </button>
+
+          {isConnected && (
+            <Badge className="bg-green-500/20 text-green-400 border-green-500/50">
+              Connected
+            </Badge>
+          )}
         </div>
 
         <Button
@@ -216,49 +250,44 @@ export function LiveRoom({ vibe, roomCode, onEndSession }: LiveRoomProps) {
           <Card className="bg-slate-800/50 border-slate-700 p-4">
             <div className="flex items-center justify-center gap-3">
               <Button
-                variant={micEnabled ? "default" : "destructive"}
+                variant={isMicEnabled ? "default" : "destructive"}
                 size="lg"
-                onClick={() => setMicEnabled(!micEnabled)}
+                onClick={toggleMicrophone}
                 className="rounded-full w-14 h-14"
               >
-                {micEnabled ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+                {isMicEnabled ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
               </Button>
 
               <Button
-                variant={videoEnabled ? "default" : "destructive"}
+                variant={isCameraEnabled ? "default" : "destructive"}
                 size="lg"
-                onClick={() => setVideoEnabled(!videoEnabled)}
+                onClick={toggleCamera}
                 className="rounded-full w-14 h-14"
               >
-                {videoEnabled ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
+                {isCameraEnabled ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
               </Button>
 
               <div className="flex-1" />
 
               <Button
                 variant="outline"
-                onClick={handleVibeShift}
+                onClick={handleNextQuestion}
                 className="bg-white/10 border-white/20 text-white hover:bg-white/20"
+                disabled={!!currentQuestion || isGenerating}
               >
-                <Shuffle className="h-4 w-4 mr-2" />
-                Vibe Shift
-              </Button>
-
-              <Button
-                variant="outline"
-                onClick={triggerNewQuestion}
-                className="bg-white/10 border-white/20 text-white hover:bg-white/20"
-                disabled={showQuestion}
-              >
-                <SkipForward className="h-4 w-4 mr-2" />
+                {isGenerating ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <SkipForward className="h-4 w-4 mr-2" />
+                )}
                 Next Question
               </Button>
             </div>
           </Card>
 
-          {/* AI Listening Indicator */}
+          {/* AI Status Indicators */}
           <AnimatePresence>
-            {isListening && (
+            {(isAnalyzing || isGenerating) && (
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -271,7 +300,11 @@ export function LiveRoom({ vibe, roomCode, onEndSession }: LiveRoomProps) {
                 >
                   <Sparkles className="h-5 w-5" />
                 </motion.div>
-                <span>AI is listening and crafting the next question...</span>
+                <span>
+                  {isAnalyzing
+                    ? 'AI is analyzing the conversation...'
+                    : 'AI is crafting the next question...'}
+                </span>
               </motion.div>
             )}
           </AnimatePresence>
@@ -287,22 +320,37 @@ export function LiveRoom({ vibe, roomCode, onEndSession }: LiveRoomProps) {
             
             <ScrollArea className="h-[calc(100vh-300px)] p-4">
               <div className="space-y-4">
-                {transcript.map((line) => (
-                  <motion.div
-                    key={line.id}
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    className="space-y-1"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className={`text-sm ${vibeColors[vibe].text}`}>
-                        {line.speaker}
-                      </span>
-                      <span className="text-xs text-slate-500">{line.timestamp}</span>
-                    </div>
-                    <p className="text-sm text-slate-300">{line.text}</p>
-                  </motion.div>
-                ))}
+                {transcript.length === 0 ? (
+                  <p className="text-slate-400 text-sm text-center mt-8">
+                    {isListening
+                      ? 'Listening... Start speaking to see transcript'
+                      : 'Enable microphone to start transcription'}
+                  </p>
+                ) : (
+                  transcript
+                    .filter((segment) => segment.isFinal)
+                    .map((segment, index) => (
+                      <motion.div
+                        key={`${segment.participantId}-${segment.timestamp}-${index}`}
+                        initial={{ opacity: 0, x: -20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        className="space-y-1"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className={`text-sm ${vibeColors[vibe].text}`}>
+                            {segment.participantName}
+                          </span>
+                          <span className="text-xs text-slate-500">
+                            {new Date(segment.timestamp).toLocaleTimeString('en-US', {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </span>
+                        </div>
+                        <p className="text-sm text-slate-300">{segment.text}</p>
+                      </motion.div>
+                    ))
+                )}
               </div>
             </ScrollArea>
           </Card>
@@ -311,9 +359,9 @@ export function LiveRoom({ vibe, roomCode, onEndSession }: LiveRoomProps) {
 
       {/* Question Card Overlay */}
       <AnimatePresence>
-        {showQuestion && currentQuestion && (
+        {currentQuestion && (
           <QuestionCard
-            question={currentQuestion}
+            question={currentQuestion.question}
             vibe={vibe}
             onAnswer={handleAnswerQuestion}
             onSkip={handleSkipQuestion}
